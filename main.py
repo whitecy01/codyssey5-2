@@ -5,17 +5,14 @@
 구성
 - Commit / CommitGraph : 커밋 노드와 DAG(해시맵 기반 저장소)
 - InvertedIndex        : keyword/author -> commit_hash 목록 역색인
-- 정렬 알고리즘         : merge_sort(안정), quick_sort(불안정) 직접 구현
+- 정렬 알고리즘         : merge_sort(안정 정렬) 직접 구현
 - 그래프 탐색          : topological_order(Kahn), shortest_path(BFS), find_ancestors(BFS)
-- Repository           : INIT/BRANCH/SWITCH/COMMIT/MERGE 등 저장소 상태 관리
+- Repository           : INIT/BRANCH/SWITCH/COMMIT 저장소 상태 관리
 - MiniGitCLI           : mini-git> REPL (파싱 -> 실행 -> 출력)
 """
 
 import hashlib
-import os
-import random
 import shlex
-import time
 from collections import deque
 from datetime import datetime
 
@@ -179,41 +176,6 @@ def merge_sort(items, key=lambda x: x):
     return merged
 
 
-def quick_sort(items, key=lambda x: x):
-    """퀵 정렬(무작위 피벗, 3-way 분할). 평균 O(n log n), 최악 O(n^2), 불안정 정렬.
-
-    제자리(in-place) 분할을 쓰므로 같은 키를 가진 원소의 상대 순서가 바뀔 수 있다.
-    """
-    arr = list(items)
-    keys = [key(x) for x in arr]
-
-    def swap(a, b):
-        arr[a], arr[b] = arr[b], arr[a]
-        keys[a], keys[b] = keys[b], keys[a]
-
-    stack = [(0, len(arr) - 1)]
-    while stack:
-        lo, hi = stack.pop()
-        if lo >= hi:
-            continue
-        swap(lo, random.randint(lo, hi))
-        pivot = keys[lo]
-        lt, i, gt = lo, lo + 1, hi
-        while i <= gt:
-            if keys[i] < pivot:
-                swap(lt, i)
-                lt += 1
-                i += 1
-            elif keys[i] > pivot:
-                swap(i, gt)
-                gt -= 1
-            else:
-                i += 1
-        stack.append((lo, lt - 1))
-        stack.append((gt + 1, hi))
-    return arr
-
-
 class MinHeap:
     """(key, value) 최소 힙. 위상 정렬에서 '준비된 커밋' 중 가장 오래된 것을 꺼낼 때 쓴다."""
 
@@ -320,7 +282,7 @@ def shortest_path(graph, start, goal):
 def find_ancestors(graph, commit_hash):
     """부모 방향 BFS 로 도달 가능한 모든 조상을 빠짐없이(중복 없이) 모은다.
 
-    merge 커밋처럼 경로가 여러 갈래여도 visited 집합으로 한 번만 방문한다.
+    부모가 여러 개라 경로가 여러 갈래여도 visited 집합으로 한 번만 방문한다.
     시간복잡도 O(V + E).
     """
     graph.get(commit_hash)
@@ -335,38 +297,6 @@ def find_ancestors(graph, commit_hash):
                 ancestors.append(graph.commits[parent])
                 queue.append(parent)
     return ancestors
-
-
-def lcs_diff(old_lines, new_lines):
-    """LCS(최장 공통 부분 수열) DP 로 줄 단위 diff 를 만든다. O(n * m).
-
-    반환: [(기호, 줄)] 목록. ' ' 공통, '-' 삭제, '+' 추가.
-    """
-    n, m = len(old_lines), len(new_lines)
-    table = [[0] * (m + 1) for _ in range(n + 1)]
-    for i in range(n - 1, -1, -1):
-        for j in range(m - 1, -1, -1):
-            if old_lines[i] == new_lines[j]:
-                table[i][j] = table[i + 1][j + 1] + 1
-            else:
-                table[i][j] = max(table[i + 1][j], table[i][j + 1])
-
-    result = []
-    i = j = 0
-    while i < n and j < m:
-        if old_lines[i] == new_lines[j]:
-            result.append((" ", old_lines[i]))
-            i += 1
-            j += 1
-        elif table[i + 1][j] >= table[i][j + 1]:
-            result.append(("-", old_lines[i]))
-            i += 1
-        else:
-            result.append(("+", new_lines[j]))
-            j += 1
-    result.extend(("-", line) for line in old_lines[i:])
-    result.extend(("+", line) for line in new_lines[j:])
-    return result
 
 
 # ---------------------------------------------------------------------------
@@ -401,24 +331,6 @@ class Repository:
         """HEAD 를 부모로 하는 커밋을 만들고 브랜치를 전진시키며 역색인을 갱신한다."""
         parent = self.head_commit()
         parents = [parent] if parent else []
-        return self._record(message, parents)
-
-    def merge(self, name):
-        """현재 브랜치 HEAD 와 대상 브랜치 HEAD 를 부모로 갖는 merge 커밋을 만든다."""
-        if name not in self.branches:
-            raise MiniGitError(f"Unknown branch: {name}")
-        if name == self.head:
-            raise MiniGitError("Cannot merge a branch into itself")
-        ours, theirs = self.head_commit(), self.branches[name]
-        if theirs is None:
-            raise MiniGitError(f"Nothing to merge: {name} has no commits")
-        if ours is None:
-            raise MiniGitError(f"Nothing to merge into: {self.head} has no commits")
-        if theirs == ours or theirs in {c.hash for c in find_ancestors(self.graph, ours)}:
-            return None  # 이미 포함됨
-        return self._record(f"Merge branch '{name}' into {self.head}", [ours, theirs])
-
-    def _record(self, message, parents):
         commit = self.graph.add(message, self.user, parents, self.head)
         self.branches[self.head] = commit.hash
         self.index.add(commit)
@@ -448,10 +360,7 @@ HELP_TEXT = """Commands (case-insensitive):
   ANCESTORS <commit_hash>          모든 조상 커밋
   SEARCH <keyword>                 메시지 키워드 검색
   SEARCH --author=<name>           작성자 검색
-  MERGE <branch_name>              (보너스) merge 커밋 생성
-  DIFF <file1> <file2>             (보너스) 텍스트 파일 줄 단위 비교
-  BENCH [size ...]                 (보너스) 정렬 알고리즘 성능 비교
-  HELP                             도움말
+  HELP                            도움말
   EXIT | QUIT                      종료
 문자열에 공백이 있으면 따옴표로 감싸세요. 예) COMMIT "Add login feature\""""
 
@@ -480,13 +389,10 @@ class MiniGitCLI:
             "path": self.cmd_path,
             "ancestors": self.cmd_ancestors,
             "search": self.cmd_search,
-            "merge": self.cmd_merge,
-            "diff": self.cmd_diff,
-            "bench": self.cmd_bench,
             "help": self.cmd_help,
         }
         # 저장소 없이 실행 가능한 명령
-        self.no_repo_needed = {"init", "diff", "bench", "help"}
+        self.no_repo_needed = {"init", "help"}
 
     def run(self):
         print("Mini Git - type HELP for commands, EXIT to quit.")
@@ -624,55 +530,8 @@ class MiniGitCLI:
         lines += [f"- {c.hash}: {c.message} ({c.author})" for c in commits]
         return "\n".join(lines)
 
-    def cmd_merge(self, args):
-        (name,) = self._exact_args(args, 1)
-        commit = self.repo.merge(name)
-        if commit is None:
-            return "Already up to date."
-        return f"[{self.repo.head} {commit.hash}] {commit.message}\nParents: {' '.join(commit.parents)}"
-
-    def cmd_diff(self, args):
-        file1, file2 = self._exact_args(args, 2)
-        contents = []
-        for path in (file1, file2):
-            if not os.path.isfile(path):
-                raise MiniGitError(f"File not found: {path}")
-            with open(path, encoding="utf-8") as f:
-                contents.append(f.read().splitlines())
-        diff = lcs_diff(contents[0], contents[1])
-        added = sum(1 for sign, _ in diff if sign == "+")
-        removed = sum(1 for sign, _ in diff if sign == "-")
-        lines = [f"--- {file1}", f"+++ {file2}"]
-        lines += [f"{sign} {line}" for sign, line in diff]
-        lines.append(f"({added} added, {removed} removed, {len(diff) - added - removed} common)")
-        return "\n".join(lines)
-
-    def cmd_bench(self, args):
-        try:
-            sizes = [int(a) for a in args] if args else [1000, 5000, 20000]
-        except ValueError:
-            raise MiniGitError("Invalid args")
-        if any(size <= 0 for size in sizes):
-            raise MiniGitError("Invalid args")
-        return benchmark_sorts(sizes)
-
     def cmd_help(self, args):
         return HELP_TEXT
-
-
-def benchmark_sorts(sizes):
-    """merge_sort 와 quick_sort 의 실행 시간을 입력 크기별로 비교한다."""
-    lines = [f"{'size':>8} | {'merge_sort':>12} | {'quick_sort':>12}"]
-    lines.append("-" * len(lines[0]))
-    for size in sizes:
-        data = [random.randint(0, size) for _ in range(size)]
-        timings = []
-        for sort in (merge_sort, quick_sort):
-            start = time.perf_counter()
-            sort(data)
-            timings.append(time.perf_counter() - start)
-        lines.append(f"{size:>8} | {timings[0] * 1000:>10.2f}ms | {timings[1] * 1000:>10.2f}ms")
-    return "\n".join(lines)
 
 
 def main():

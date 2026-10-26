@@ -27,9 +27,6 @@ python main.py      # Python 3.10 이상, 외부 라이브러리 없음
 | `ANCESTORS <commit_hash>` | 도달 가능한 모든 조상 커밋 |
 | `SEARCH <keyword>` | 메시지 키워드 검색 (여러 단어면 모두 포함하는 커밋) |
 | `SEARCH --author=<name>` | 작성자 검색 |
-| `MERGE <branch_name>` | (보너스) 부모가 2개인 merge 커밋 생성 |
-| `DIFF <file1> <file2>` | (보너스) 두 텍스트 파일을 줄 단위로 비교 |
-| `BENCH [size ...]` | (보너스) merge sort와 quick sort 실행 시간 비교 |
 | `HELP` | 도움말 |
 
 에러 메시지: `Invalid args`, `Unknown branch: <name>`, `Unknown commit: <hash>`, `Unknown command: <cmd>`, `Not a repository. Run INIT <user_name> first.`
@@ -74,10 +71,6 @@ Path: bb66463 -> 588ece3 -> 40bf1c6
 mini-git> search "login"
 Found 1 commit:
 - bb66463: Add login feature (Alice)
-
-mini-git> merge feature
-[main 23b4292] Merge branch 'feature' into main
-Parents: 40bf1c6 bb66463
 ```
 
 LOG의 `[branch]`는 커밋이 만들어진 브랜치입니다. hash는 실행할 때마다 달라집니다.
@@ -88,20 +81,19 @@ LOG의 `[branch]`는 커밋이 만들어진 브랜치입니다. hash는 실행�
 | --- | --- |
 | `Commit`, `CommitGraph` | 커밋 노드와 `hash -> Commit` 해시맵 저장소, 자식 목록 |
 | `InvertedIndex` | `keyword -> [hash]`, `author -> [hash]` 역색인 |
-| `merge_sort`, `quick_sort` | 직접 구현한 정렬 (`sorted()`, `list.sort()` 미사용) |
+| `merge_sort` | 직접 구현한 정렬 (`sorted()`, `list.sort()` 미사용) |
 | `MinHeap` | 위상 정렬에서 준비된 커밋을 생성 순서대로 꺼내는 최소 힙 |
 | `topological_order` | Kahn 알고리즘 (LOG) |
 | `shortest_path` | 무방향 BFS 최단 경로 (PATH) |
 | `find_ancestors` | 부모 방향 BFS (ANCESTORS) |
-| `lcs_diff` | LCS 기반 줄 단위 diff (DIFF) |
-| `Repository` | 브랜치, HEAD, 사용자 상태와 커밋/merge 처리 |
+| `Repository` | 브랜치, HEAD, 사용자 상태와 커밋 처리 |
 | `MiniGitCLI` | REPL, 명령 파싱(`shlex`)과 에러 처리 |
 
 ## 설계 설명
 
 ### 커밋 그래프는 왜 DAG인가
 
-커밋은 부모를 가리키고, 부모는 자식보다 항상 먼저 존재합니다. 새 커밋은 이미 있는 커밋만 부모로 삼을 수 있고, 한 번 만든 커밋의 부모는 바뀌지 않습니다. 그래서 간선은 항상 과거 방향으로만 생기고, 어떤 커밋에서 부모를 따라가도 자기 자신으로 돌아올 수 없습니다(비순환). merge 커밋은 부모가 2개라서 트리가 아닌 일반 그래프가 됩니다. 이 둘을 합치면 방향성 비순환 그래프, 즉 DAG입니다.
+커밋은 부모를 가리키고, 부모는 자식보다 항상 먼저 존재합니다. 새 커밋은 이미 있는 커밋만 부모로 삼을 수 있고, 한 번 만든 커밋의 부모는 바뀌지 않습니다. 그래서 간선은 항상 과거 방향으로만 생기고, 어떤 커밋에서 부모를 따라가도 자기 자신으로 돌아올 수 없습니다(비순환). 또 커밋은 부모를 0개 이상 가질 수 있어서(실제 Git의 merge 커밋은 부모가 2개) 트리가 아닌 일반 그래프가 됩니다. 이 둘을 합치면 방향성 비순환 그래프, 즉 DAG입니다.
 
 `CommitGraph.add`는 존재하지 않는 부모를 거부하므로 사이클이 생길 수 없습니다.
 
@@ -132,22 +124,19 @@ LOG의 `[branch]`는 커밋이 만들어진 브랜치입니다. hash는 실행�
 
 ### ANCESTORS: 모든 조상 탐색
 
-부모 방향으로 BFS를 돌면서 `visited` 집합으로 중복 방문을 막습니다. merge 커밋처럼 같은 조상으로 가는 경로가 여러 개여도 한 번씩만, 빠짐없이 출력합니다. 시간복잡도는 O(V + E)입니다.
+부모 방향으로 BFS를 돌면서 `visited` 집합으로 중복 방문을 막습니다. 같은 조상으로 가는 경로가 여러 개여도 한 번씩만, 빠짐없이 출력합니다. 시간복잡도는 O(V + E)입니다.
 
-### 정렬 알고리즘
+### 정렬 알고리즘 (병합 정렬)
 
-| 알고리즘 | 평균 | 최악 | 추가 메모리 | 안정성 |
-| --- | --- | --- | --- | --- |
-| `merge_sort` | O(n log n) | O(n log n) | O(n) | 안정 |
-| `quick_sort` (무작위 피벗, 3-way 분할) | O(n log n) | O(n²) | O(log n) 스택 | 불안정 |
+| 평균 | 최악 | 추가 메모리 | 안정성 |
+| --- | --- | --- | --- |
+| O(n log n) | O(n log n) | O(n) | 안정 |
 
-- `merge_sort`는 병합할 때 키가 같으면 왼쪽 원소를 먼저 가져가므로(`<=`) 입력 순서가 유지됩니다. LOG 정렬에는 이것을 씁니다.
-- `quick_sort`는 제자리 교환으로 분할하므로 키가 같은 원소의 순서가 바뀔 수 있습니다. 무작위 피벗으로 이미 정렬된 입력에서 최악이 나올 가능성을 줄이고, 3-way 분할로 중복 키가 많을 때도 효율을 유지합니다.
-- 두 함수 모두 `key` 함수를 받아 비교 기준을 바꿀 수 있습니다.
+- 배열을 반으로 나눠 각각 정렬한 뒤 병합합니다. 분할 깊이가 log n이고 각 깊이에서 n번 비교하므로 입력 모양과 관계없이 O(n log n)입니다.
+- 병합할 때 키가 같으면 왼쪽 원소를 먼저 가져가므로(`<=`) 입력 순서가 유지되는 안정 정렬입니다.
+- `key` 함수를 받아 비교 기준을 바꿀 수 있습니다.
   - `--sort-by=date`: `(timestamp, 생성 순번)`
   - `--sort-by=author`: `(작성자 소문자, timestamp, 생성 순번)`, 즉 같은 작성자 안에서는 시간순
-
-`BENCH 1000 10000 50000`처럼 입력 크기를 바꿔 실행 시간을 비교할 수 있습니다.
 
 ### 역색인
 
@@ -161,4 +150,4 @@ LOG의 `[branch]`는 커밋이 만들어진 브랜치입니다. hash는 실행�
 ## 제약 사항 준수
 
 - 그래프 라이브러리, `sorted()`, `list.sort()`, `heapq`를 쓰지 않습니다.
-- 파일 내용 추적, 네트워크, 영속 저장은 구현하지 않습니다. 모든 데이터는 메모리에만 있습니다. (DIFF는 보너스 비교 기능일 뿐, 커밋에 파일을 저장하지 않습니다.)
+- 파일 내용 추적, 네트워크, 영속 저장은 구현하지 않습니다. 모든 데이터는 메모리에만 있습니다.
